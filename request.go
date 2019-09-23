@@ -6,7 +6,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"golang.org/x/net/context"
 )
@@ -198,19 +197,22 @@ func (s *Server) handleConnect(ctx context.Context, conn conn, req *Request) err
 		return fmt.Errorf("Failed to send reply: %v", err)
 	}
 
-	// Start proxying
-	errCh := make(chan error, 2)
-	go proxy(target, req.bufConn, errCh)
-	go proxy(conn, target, errCh)
+	go io.TeeReader(req.bufConn, target)
+	go io.TeeReader(target, conn)
 
-	// Wait
-	for i := 0; i < 2; i++ {
-		e := <-errCh
-		if e != nil {
-			// return from this function closes target (and conn).
-			return e
-		}
-	}
+	// // Start proxying
+	// errCh := make(chan error, 2)
+	// go proxy(target, req.bufConn, errCh)
+	// go proxy(conn, target, errCh)
+
+	// // Wait
+	// for i := 0; i < 2; i++ {
+	// 	e := <-errCh
+	// 	if e != nil {
+	// 		// return from this function closes target (and conn).
+	// 		return e
+	// 	}
+	// }
 	return nil
 }
 
@@ -354,16 +356,23 @@ type closeWriter interface {
 	CloseWrite() error
 }
 
+type closeReader interface {
+	CloseRead() error
+}
+
 // proxy is used to suffle data from src to destination, and sends errors
 // down a dedicated channel
 func proxy(dst io.Writer, src io.Reader, errCh chan error) {
+	io.TeeReader(src, dst)
 	_, err := io.Copy(dst, src)
-	if err == syscall.EPIPE {
-		// do nothing
-	}
 
 	if tcpConn, ok := dst.(closeWriter); ok {
 		tcpConn.CloseWrite()
 	}
+
+	if tcpConn, ok := src.(closeReader); ok {
+		tcpConn.CloseRead()
+	}
+
 	errCh <- err
 }
